@@ -3,6 +3,8 @@ from models import HMM
 from data import get_datasets, read_config
 from training import Trainer
 
+torch.autograd.set_detect_anomaly(True)
+
 # Generate datasets from text file
 path = "data"
 N = 128
@@ -26,5 +28,3 @@ for epoch in range(num_epochs):
 
 	print("========= Results: epoch %d of %d =========" % (epoch+1, num_epochs))
 	print("train loss: %.2f| valid loss: %.2f\n" % (train_loss, valid_loss) )
-
-
