@@ -2,6 +2,8 @@ import torch
 from tqdm import tqdm # for displaying progress bar
 import os
 import pandas as pd
+from models import EmissionModel, TransitionModel, HMM
+import numpy as np
 
 class Trainer:
     def __init__(self, model, config, lr):
@@ -35,9 +37,13 @@ class Trainer:
         train_acc = 0
         train_loss = 0
         num_samples = 0
+        split_every = 500
         self.model.train()
         print_interval = 100
         iterator = tqdm(dataset.loader, ncols=100)
+        losses = []
+        prev_loss = float("inf")
+        print(f"num of states = {self.model.N}")
         for idx, batch in enumerate(iterator):
             x,T = batch
             batch_size = len(x)
@@ -48,17 +54,38 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
             train_loss += loss.cpu().data.numpy().item() * batch_size
+            losses.append(loss.cpu().item())
+
                 
             if idx % 10 == 0:
-                iterator.set_description(f"loss = {loss.cpu().item():.2f}")
+                iterator.set_description(
+                    f"states = {self.model.N}; "
+                    f"loss = {loss.cpu().item():.2f}"
+                )
 
+            #if idx % print_interval == 0:
+            #    
+            #    print(f"\nloss = {loss.cpu().item():.2f}")
+            #    for _ in range(5):
+            #        sampled_x, sampled_z = self.model.sample()
+            #        print("".join([self.config.Sx[s] for s in sampled_x]))
+            #        print(sampled_z)
 
-            if idx % print_interval == 0:
-                print(loss.item())
-                for _ in range(5):
-                    sampled_x, sampled_z = self.model.sample()
-                    print("".join([self.config.Sx[s] for s in sampled_x]))
-                    print(sampled_z)
+            if idx != 0 and idx % split_every == 0:
+                curr_loss = np.mean(losses)
+                #if curr_loss > prev_loss:
+                #    self.model = self.old_model
+                #    return train_loss
+                self.old_model = self.model
+
+                split_idx = int(torch.argmax(self.model.emission_model.entropy))
+                print('\nsplit idx = ', split_idx)
+                self.model = HMM.split_state(self.model, split_idx)
+                self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=0.00001)
+                self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min')
+                prev_loss = curr_loss
+                losses = []
+
         train_loss /= num_samples
         train_acc /= num_samples
         return train_loss

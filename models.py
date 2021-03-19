@@ -1,5 +1,4 @@
 import torch
-import genbmm
 
 class HMM(torch.nn.Module):
     """
@@ -9,15 +8,38 @@ class HMM(torch.nn.Module):
     - viterbi(): computes the most likely state sequence.
     - sample(): draws a sample from p(x).
     """
-    def __init__(self, config):
+    def __init__(self, N, M, state_priors=None, transition_model=None, emission_model=None):
         super(HMM, self).__init__()
-        self.M = config.M # number of possible observations
-        self.N = config.N # number of states
-        self.unnormalized_state_priors = torch.nn.Parameter(torch.randn(self.N))
-        self.transition_model = TransitionModel(self.N)
-        self.emission_model = EmissionModel(self.N,self.M)
+        self.N = N # number of states
+        self.M = M # number of possible observations
+
+        #self._unnormalized_state_priors = priors
+        if state_priors is None:
+            self.state_priors = StatePriors(N)
+        else:
+            self.state_priors = state_priors
+        #self.unnormalized_state_priors = self.state_priors.unnormalized_state_priors
+
+        if transition_model is None:
+            self.transition_model = TransitionModel(self.N)
+        else:
+            self.transition_model = transition_model
+
+        if emission_model is None:
+            self.emission_model = EmissionModel(self.N, self.M)
+        else:
+            self.emission_model = emission_model
+
         self.is_cuda = torch.cuda.is_available()
-        if self.is_cuda: self.cuda()
+        if self.is_cuda:
+            self.cuda()
+
+    @classmethod
+    def split_state(cls, old_hmm, split_idx):
+        state_priors = StatePriors.split_state(old_hmm.state_priors, split_idx)
+        transition_model = TransitionModel.split_state(old_hmm.transition_model, split_idx)
+        emission_model = EmissionModel.split_state(old_hmm.emission_model, split_idx)
+        return cls(old_hmm.N+1, old_hmm.M, state_priors, transition_model, emission_model)
 
     def forward(self, x, T):
         """
@@ -32,9 +54,10 @@ class HMM(torch.nn.Module):
             T = T.cuda()
 
         batch_size = x.shape[0]; T_max = x.shape[1]
-        log_state_priors = torch.nn.functional.log_softmax(self.unnormalized_state_priors, dim=0)
+        log_state_priors = torch.nn.functional.log_softmax(self.state_priors.unnormalized_state_priors, dim=0)
         log_alpha = torch.zeros(batch_size, T_max, self.N)
-        if self.is_cuda: log_alpha = log_alpha.cuda()
+        if self.is_cuda:
+            log_alpha = log_alpha.cuda()
 
         log_alpha[:, 0, :] = self.emission_model(x[:,0]) + log_state_priors
         for t in range(1, T_max):
@@ -47,7 +70,7 @@ class HMM(torch.nn.Module):
         return log_probs
 
     def sample(self, T=10):
-        state_priors = torch.nn.functional.softmax(self.unnormalized_state_priors, dim=0)
+        state_priors = torch.nn.functional.softmax(self.state_priors.unnormalized_state_priors, dim=0)
         transition_matrix = torch.nn.functional.softmax(self.transition_model.unnormalized_transition_matrix, dim=0)
         emission_matrix = torch.nn.functional.softmax(self.emission_model.unnormalized_emission_matrix, dim=1)
 
@@ -79,7 +102,7 @@ class HMM(torch.nn.Module):
             T = T.cuda()
 
         batch_size = x.shape[0]; T_max = x.shape[1]
-        log_state_priors = torch.nn.functional.log_softmax(self.unnormalized_state_priors, dim=0)
+        log_state_priors = torch.nn.functional.log_softmax(self.state_priors.unnormalized_state_priors, dim=0)
         log_delta = torch.zeros(batch_size, T_max, self.N).float()
         psi = torch.zeros(batch_size, T_max, self.N).long()
         if self.is_cuda:
@@ -131,16 +154,9 @@ def log_domain_matmul(log_A, log_B, use_max=False):
 
     log_A_expanded = log_A.repeat(p, 1, 1).permute(1, 2, 0)
     log_B_expanded = log_B.repeat(m, 1, 1)
-    #log_A_expanded = torch.stack([log_A] * p, dim=2)
-    #log_B_expanded = torch.stack([log_B] * m, dim=0)
-    #print(log_B_expanded.size())
-    #print(torch.eq(log_B_expanded1, log_B_expanded).all())
-    #exit()
 
     elementwise_sum = log_A_expanded + log_B_expanded
     out = torch.logsumexp(elementwise_sum, dim=1)
-
-    #out = genbmm.logbmm(log_A.unsqueeze(0).contiguous(), log_B.unsqueeze(1).contiguous())[0]
 
     return out
 
@@ -157,15 +173,72 @@ def maxmul(log_A, log_B):
 
     return out1, out2
 
+class StatePriors(torch.nn.Module):
+    def __init__(self, N, params=None):
+        super(StatePriors, self).__init__()
+        self.N = N
+
+        if params is None:
+            params = [torch.nn.Parameter(torch.randn(1)) for _ in range(N)]
+        self._unnormalized_state_priors = torch.nn.ParameterList(params)
+
+    @property
+    def unnormalized_state_priors(self):
+        return torch.cat([self._unnormalized_state_priors[i] for i in range(self.N)], dim=0)
+
+    @classmethod
+    def split_state(cls, old_model, i):
+        new_params = []
+        for j, param in enumerate(old_model._unnormalized_state_priors):
+            pi = param.data
+            g = False
+            if j == i:
+                g = True
+                pi /= 2
+            new_params.append(torch.nn.Parameter(pi, requires_grad=g))
+        new_params.append(new_params[i])
+        return cls(old_model.N+1, new_params)
+
+
 class TransitionModel(torch.nn.Module):
     """
     - forward(): computes the log probability of a transition.
     - sample(): given a previous state, sample a new state.
     """
-    def __init__(self, N):
+    def __init__(self, N, params=None):
         super(TransitionModel, self).__init__()
         self.N = N # number of states
-        self.unnormalized_transition_matrix = torch.nn.Parameter(torch.randn(N,N))
+
+        if params is None:
+            params = [torch.nn.Parameter(torch.randn(N)) for _ in range(N)]
+
+        self._unnormalized_transition_matrix = torch.nn.ParameterList(params)
+
+    @property
+    def unnormalized_transition_matrix(self):
+        return torch.stack([self._unnormalized_transition_matrix[i] for i in range(self.N)], dim=1)
+
+    @classmethod
+    def split_state(cls, old_model, i):
+
+        new_params = []
+        for j, param in enumerate(old_model._unnormalized_transition_matrix):
+            a_j = param.data
+            if i == j:
+                a_ij = a_j[i] / 2 
+                a_j[i] = a_ij
+            else:
+                a_ij = a_j[i]
+            new_params.append(torch.cat([a_j, a_ij.view(1)], dim=0))
+
+        for p in range(len(new_params)):
+            g = False
+            if p == i or p == len(new_params) - 1:
+                g = True
+            new_params[p] = torch.nn.Parameter(new_params[p], requires_grad=g)
+
+        new_params.append(new_params[i])
+        return cls(old_model.N+1, new_params)
 
     def forward(self, log_alpha, use_max):
         """
@@ -177,7 +250,6 @@ class TransitionModel(torch.nn.Module):
         log_transition_matrix = torch.nn.functional.log_softmax(self.unnormalized_transition_matrix, dim=0)
 
         # Matrix multiplication in the log domain
-        #out = genbmm.logbmm(log_alpha.unsqueeze(0).contiguous(), transition_matrix.unsqueeze(0).contiguous())[0]
         if use_max:
             out1, out2 = maxmul(log_transition_matrix, log_alpha.transpose(0,1))
             return out1.transpose(0,1), out2.transpose(0,1)
@@ -191,11 +263,37 @@ class EmissionModel(torch.nn.Module):
     - forward(): computes the log probability of an observation.
     - sample(): given a state, sample an observation for that state.
     """
-    def __init__(self, N, M):
+    def __init__(self, N, M, params=None):
         super(EmissionModel, self).__init__()
         self.N = N # number of states
         self.M = M # number of possible observations
-        self.unnormalized_emission_matrix = torch.nn.Parameter(torch.randn(N,M))
+
+        if params is None:
+            params = [torch.nn.Parameter(torch.randn(M)) for _ in range(N)]
+        self._unnormalized_transition_matrix = torch.nn.ParameterList(params)
+
+    @property
+    def unnormalized_emission_matrix(self):
+        return torch.stack([self._unnormalized_transition_matrix[i] for i in range(self.N)], dim=0)
+
+    @property
+    def entropy(self):
+        m = self.unnormalized_emission_matrix.clone().detach()
+        p = torch.softmax(m, dim=1)
+        logp = torch.log(torch.clamp(p, 1e-12))
+        e = -torch.sum(p * logp, dim=1)
+        return e
+
+    @classmethod
+    def split_state(cls, old_model, i):
+        new_params = []
+        for k, param in enumerate(old_model._unnormalized_transition_matrix):
+            g = False
+            if k == i:
+                g = True
+            new_params.append(torch.nn.Parameter(param.data, requires_grad=g))
+        new_params.append(new_params[i])
+        return cls(old_model.N+1, old_model.M, new_params)
 
     def forward(self, x_t):
         """

@@ -39,7 +39,7 @@ class TextDataset(torch.utils.data.Dataset):
 		self.lines = lines # list of strings
 		self.Sx = Sx
 		pad_and_one_hot = PadAndOneHot(self.Sx) # function for generating a minibatch from strings
-		self.loader = torch.utils.data.DataLoader(self, batch_size=32, num_workers=1, shuffle=True, collate_fn=pad_and_one_hot)
+		self.loader = torch.utils.data.DataLoader(self, batch_size=128, num_workers=16, shuffle=True, collate_fn=pad_and_one_hot)
 
 	def __len__(self):
 		return len(self.lines)
