@@ -96,8 +96,8 @@ class Trainer:
                 z_star, best_path_scores = self.model.viterbi(x[:5], T[:5])
                 for ii in range(5):
                     _x = x[ii][:T[ii]]
-                    print("x = ", [self.config.vocab[s] for s in _x])
-                    print("z = ", z_star[ii])
+                    _x = [self.config.vocab[s] for s in _x]
+                    print({xx: zz for xx, zz in zip(_x, z_star[ii])})
                     print()
                 #sampled_x, sampled_z = self.model.sample()
                 #print("x = ", [self.config.vocab[s] for s in sampled_x])
