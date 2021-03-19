@@ -14,6 +14,11 @@ class Trainer:
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min')
         self.train_df = pd.DataFrame(columns=["loss","lr"])
         self.valid_df = pd.DataFrame(columns=["loss","lr"])
+        self.prev_loss = float("inf")
+
+    def get_lr(self):
+        for param_group in self.optimizer.param_groups:
+            return param_group['lr']
 
     def load_checkpoint(self, checkpoint_path):
         if os.path.isfile(os.path.join(checkpoint_path, "model_state.pth")):
@@ -36,12 +41,10 @@ class Trainer:
     def train(self, dataset):
         train_loss = 0
         num_samples = 0
-        split_every = 500
         print_interval = 100
         iterator = tqdm(dataset.loader, ncols=100)
         losses = []
         prev_loss = float("inf")
-        print(f"num of states = {self.model.N}")
         self.model.train()
         for idx, batch in enumerate(iterator):
             x,T = batch
@@ -59,31 +62,18 @@ class Trainer:
             if idx % 1 == 0:
                 iterator.set_description(
                     f"states = {self.model.N}; "
-                    f"loss = {loss.cpu().item():.2f}"
+                    f"loss = {loss.cpu().item():.2f} "
+                    f"lr = {self.get_lr():.3e}"
                 )
 
-            if idx % print_interval == 0:
-                
-                print(f"\nloss = {loss.cpu().item():.2f}")
-                for _ in range(5):
-                    sampled_x, sampled_z = self.model.sample()
-                    print("x = ", [self.config.vocab[s] for s in sampled_x])
-                    print("z = ", sampled_z)
-
-            if idx != 0 and idx % split_every == 0:
-                curr_loss = np.mean(losses)
-                #if curr_loss > prev_loss:
-                #    self.model = self.old_model
-                #    return train_loss
-                self.old_model = self.model
-
-                split_idx = int(torch.argmax(self.model.emission_model.entropy))
-                print('\nsplit idx = ', split_idx)
-                self.model = HMM.split_state(self.model, split_idx)
-                self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=0.00001)
-                self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min')
-                prev_loss = curr_loss
-                losses = []
+            #if idx % print_interval == 0:
+            #    
+            #    print(f"\nloss = {loss.cpu().item():.2f}")
+            #    
+            #    for _ in range(5):
+            #        sampled_x, sampled_z = self.model.sample()
+            #        print("x = ", [self.config.vocab[s] for s in sampled_x])
+            #        print("z = ", sampled_z)
 
         train_loss /= num_samples
         return train_loss
@@ -98,14 +88,36 @@ class Trainer:
             batch_size = len(x)
             num_samples += batch_size
             log_probs = self.model(x,T)
+
             loss = -log_probs.mean()
             test_loss += loss.cpu().data.numpy().item() * batch_size
             if idx % print_interval == 0:
                 print(loss.item())
-                sampled_x, sampled_z = self.model.sample()
-                print("x = ", [self.config.vocab[s] for s in sampled_x])
-                print("z = ", sampled_z)
+                z_star, best_path_scores = self.model.viterbi(x[:5], T[:5])
+                for ii in range(5):
+                    _x = x[ii][:T[ii]]
+                    print("x = ", [self.config.vocab[s] for s in _x])
+                    print("z = ", z_star[ii])
+                    print()
+                #sampled_x, sampled_z = self.model.sample()
+                #print("x = ", [self.config.vocab[s] for s in sampled_x])
+                #print("z = ", sampled_z)
         test_loss /= num_samples
         self.scheduler.step(test_loss) # if the validation loss hasn't decreased, lower the learning rate
         return test_loss
+
         
+    def split_state(self, curr_loss):
+        if curr_loss > self.prev_loss:
+            self.model = self.old_model
+            return False
+        self.old_model = self.model
+    
+        split_idx = int(torch.argmax(self.model.emission_model.entropy))
+        print('\nsplit idx = ', split_idx)
+        self.model = HMM.split_state(self.model, split_idx)
+    
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=0.00001)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min')
+        self.prev_loss = curr_loss
+        return True
