@@ -34,16 +34,15 @@ class Trainer:
             print("Could not save model")
         
     def train(self, dataset):
-        train_acc = 0
         train_loss = 0
         num_samples = 0
         split_every = 500
-        self.model.train()
         print_interval = 100
         iterator = tqdm(dataset.loader, ncols=100)
         losses = []
         prev_loss = float("inf")
         print(f"num of states = {self.model.N}")
+        self.model.train()
         for idx, batch in enumerate(iterator):
             x,T = batch
             batch_size = len(x)
@@ -57,19 +56,19 @@ class Trainer:
             losses.append(loss.cpu().item())
 
                 
-            if idx % 10 == 0:
+            if idx % 1 == 0:
                 iterator.set_description(
                     f"states = {self.model.N}; "
                     f"loss = {loss.cpu().item():.2f}"
                 )
 
-            #if idx % print_interval == 0:
-            #    
-            #    print(f"\nloss = {loss.cpu().item():.2f}")
-            #    for _ in range(5):
-            #        sampled_x, sampled_z = self.model.sample()
-            #        print("".join([self.config.Sx[s] for s in sampled_x]))
-            #        print(sampled_z)
+            if idx % print_interval == 0:
+                
+                print(f"\nloss = {loss.cpu().item():.2f}")
+                for _ in range(5):
+                    sampled_x, sampled_z = self.model.sample()
+                    print("x = ", [self.config.vocab[s] for s in sampled_x])
+                    print("z = ", sampled_z)
 
             if idx != 0 and idx % split_every == 0:
                 curr_loss = np.mean(losses)
@@ -87,11 +86,9 @@ class Trainer:
                 losses = []
 
         train_loss /= num_samples
-        train_acc /= num_samples
         return train_loss
 
     def test(self, dataset, print_interval=20):
-        test_acc = 0
         test_loss = 0
         num_samples = 0
         self.model.eval()
@@ -106,10 +103,9 @@ class Trainer:
             if idx % print_interval == 0:
                 print(loss.item())
                 sampled_x, sampled_z = self.model.sample()
-                print("".join([self.config.Sx[s] for s in sampled_x]))
-                print(sampled_z)
+                print("x = ", [self.config.vocab[s] for s in sampled_x])
+                print("z = ", sampled_z)
         test_loss /= num_samples
-        test_acc /= num_samples
         self.scheduler.step(test_loss) # if the validation loss hasn't decreased, lower the learning rate
         return test_loss
         

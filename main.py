@@ -9,7 +9,7 @@ torch.autograd.set_detect_anomaly(True)
 path = "data"
 N = 3
 config = read_config(N, path)
-train_dataset, valid_dataset = get_datasets(config)
+train_dataset, valid_dataset = get_datasets(config, parent_dir="./data/agent")
 checkpoint_path = "."
 
 # Initialize model
